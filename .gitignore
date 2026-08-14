@@ -141,3 +141,26 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# Env
+.env
+.env.local
+
+# SITL artifacts
+eeprom.bin
+*.tlog
+*.tlog.raw
+*.BIN
+logs/
+terrain/
+
+# OS
+.DS_Store
+Thumbs.db
