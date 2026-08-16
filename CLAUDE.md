@@ -36,13 +36,13 @@ The frontend consumes only the normalized telemetry format, never raw MAVLink. B
 
 ## Dev environment
 
-- SITL: WSL2 Ubuntu 24.04, ArduPilot source at `~/ardupilot`. Start with `sim_vehicle.py -v ArduPlane`.
+- SITL: WSL2 Ubuntu 24.04, ArduPilot source at `~/ardupilot`. Start with `sim_vehicle.py -v ArduPlane --out udp:127.0.0.1:14550` — the explicit `--out` is required: under mirrored networking, sim_vehicle's WSL2 host-IP auto-detection resolves to the LAN gateway and telemetry never reaches Windows (see NOTES.md 2026-08-16).
 - WSL networking: mirrored mode (`%UserProfile%\.wslconfig`) so WSL2 and Windows share `127.0.0.1` — SITL's default UDP output on 14550 reaches Windows listeners directly. Fallback if it misbehaves: remove `.wslconfig` (back to NAT) and add `--out udp:<windows-ip>:14550` to `sim_vehicle.py`.
 - Backend Python runs on native Windows (Python 3.12 via winget), venv at `backend/.venv`.
 
 ## Build order
 
-- [ ] 1. SITL running + terminal altitude readout (in progress)
+- [x] 1. SITL running + terminal altitude readout — done 2026-08-16 (`backend/print_altitude.py`, capture 1 in docs/media)
 - [ ] 2. FastAPI + WebSocket bridge, one live telemetry value in the browser, unstyled
 - [ ] 3. Map track + altitude and battery time series
 - [ ] 4. Waypoint upload and mission monitoring

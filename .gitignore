@@ -158,6 +158,7 @@ eeprom.bin
 *.tlog
 *.tlog.raw
 *.BIN
+*.parm
 logs/
 terrain/
 
