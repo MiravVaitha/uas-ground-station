@@ -17,9 +17,15 @@ def mavlink_reader() -> None:
     global latest
     conn = mavutil.mavlink_connection("udpin:127.0.0.1:14550")
     conn.wait_heartbeat()
+    state: dict = {}
     while True:
-        msg = conn.recv_match(type="GLOBAL_POSITION_INT", blocking=True)
-        latest = telemetry.normalize(msg)
+        msg = conn.recv_match(
+            type=["GLOBAL_POSITION_INT", "SYS_STATUS"], blocking=True
+        )
+        # Merge into a fresh dict rather than mutating: `latest` must only
+        # ever be swapped whole (see note on `latest` above).
+        state = {**state, **telemetry.normalize(msg)}
+        latest = state
 
 
 @asynccontextmanager
