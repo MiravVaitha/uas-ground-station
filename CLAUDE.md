@@ -4,7 +4,7 @@ Ground control station for a fixed-wing UAS. Next.js frontend, FastAPI + pymavli
 
 ## Stack
 
-- **Frontend**: Next.js (App Router) + TypeScript + Tailwind — `frontend/` (created in build step 2)
+- **Frontend**: Next.js (App Router) + TypeScript + Tailwind — `frontend/`
 - **Backend**: Python 3.12, FastAPI + pymavlink — `backend/`, venv at `backend/.venv`
 - **Vehicle**: ArduPilot SITL (ArduPlane) in WSL2 Ubuntu 24.04
 - **Links**: MAVLink over UDP `127.0.0.1:14550` (SITL → backend); WebSocket (backend → browser)
@@ -43,7 +43,7 @@ The frontend consumes only the normalized telemetry format, never raw MAVLink. B
 ## Build order
 
 - [x] 1. SITL running + terminal altitude readout — done 2026-08-16 (`backend/print_altitude.py`, capture 1 in docs/media)
-- [ ] 2. FastAPI + WebSocket bridge, one live telemetry value in the browser, unstyled
+- [x] 2. FastAPI + WebSocket bridge, one live telemetry value in the browser, unstyled — done 2026-08-16 (`backend/app.py` + user-written `backend/telemetry.py`, `frontend/app/page.tsx`, capture 2 in docs/media)
 - [ ] 3. Map track + altitude and battery time series
 - [ ] 4. Waypoint upload and mission monitoring
 - [ ] 5. Payload release point solver (airspeed, altitude, wind in; drop trigger point out)
@@ -67,3 +67,5 @@ Capture points:
 - **2026-08-14 — SITL runs in WSL2 Ubuntu 24.04, not Docker.** WSL2 is ArduPilot's supported Windows path; SITL is flown interactively from the MAVProxy console; there is no official maintained SITL runtime image (Docker would mean owning a Dockerfile plus UDP port-mapping quirks); Docker Desktop runs on WSL2 anyway, so it adds a layer without removing one.
 - **2026-08-14 — Backend on native Windows, WSL2 in mirrored networking mode.** Shared `127.0.0.1` lets SITL's default 14550 output reach a Windows listener with zero forwarding, and the terminal altitude script proves the exact UDP path the FastAPI bridge will later use.
 - **2026-08-14 — Normalized telemetry format.** The frontend never sees raw MAVLink: live mode translates, replay mode is pre-recorded in the same shape. Forced by the replay-without-backend constraint; keeps the UI decoupled from any one telemetry transport.
+- **2026-08-16 — Normalized telemetry v1: `{"schema": 1, "time_s": float, "alt_m": float}`.** Flat JSON, SI units, unit suffix in every field name; conversions happen once, in `backend/telemetry.py`. The format grows by adding fields, never renaming or re-scaling — replay logs recorded to disk must stay playable forever; `schema` stamps the version for future readers.
+- **2026-08-16 — Backend concurrency: reader thread + latest-frame snapshot.** Blocking pymavlink can't run on FastAPI's event loop, so a daemon thread owns the MAVLink connection and swaps each normalized frame into a shared `latest` reference (atomic under the GIL); WebSocket handlers sample it at 5 Hz. Snapshot instead of a queue because a live display only wants the newest state — recording (slice 6) has different requirements and will get its own structure.
