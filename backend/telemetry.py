@@ -14,6 +14,14 @@ def normalize(msg) -> dict:
             "battery_v": msg.voltage_battery / 1000.0,
             "battery_pct": msg.battery_remaining,
         }
+    elif kind == "MISSION_CURRENT":
+        return {
+            "wp_seq": msg.seq,
+        }
+    elif kind == "NAV_CONTROLLER_OUTPUT":
+        return {
+            "wp_dist_m": msg.wp_dist,
+        }
     return {}
         
     
