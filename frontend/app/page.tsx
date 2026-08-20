@@ -144,6 +144,21 @@ export default function Home() {
 
   const frame = view.frame;
 
+  // Live mode talks to a backend on 127.0.0.1, so it only means anything when
+  // the page is served from the same machine. A deployed copy starts in
+  // replay instead of sitting on LINK DOWN retrying a localhost socket.
+  // Runs after mount rather than in the initial state so the prerendered
+  // markup and the first client render agree.
+  useEffect(() => {
+    const local = ["localhost", "127.0.0.1", "[::1]"].includes(
+      window.location.hostname
+    );
+    if (!local) {
+      setMode("replay");
+      setPlaying(true);
+    }
+  }, []);
+
   // Live telemetry. Not opened at all in replay mode — the constraint is that
   // replay needs no backend, so it must not even try to reach one.
   useEffect(() => {

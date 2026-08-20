@@ -14,6 +14,8 @@ Ground control station for a fixed-wing UAS. Live MAVLink telemetry from ArduPil
 
 Everything except mission upload keeps working with the backend off — the map, charts, waypoint planning, and the release solver are all either replayed or computed in the browser. Upload is the one action that genuinely needs a vehicle, and it says so.
 
+A deployed copy of this app therefore runs the replay flight, the map, planning and the solver, but not live telemetry: the backend listens on `127.0.0.1`, so live mode only means anything when the page is served from the same machine. The app picks its starting mode from the hostname for that reason.
+
 ## Architecture
 
 ```mermaid
@@ -110,6 +112,12 @@ uvicorn app:app
 To fly a mission: click waypoints on the map, press **Upload mission**, then `mode auto` in the MAVProxy console.
 
 ![Waypoint mission on the map](docs/media/04-waypoint-mission-map.png)
+
+### Deploying
+
+The frontend deploys as a normal Next.js app with **Root Directory set to `frontend`** and no environment variables. What ships is the replay experience described above.
+
+The backend is not deployable to a serverless host: it needs a long-lived process holding a UDP socket to receive MAVLink, which is the opposite of a request-scoped function. Run it locally alongside SITL.
 
 ## Recording a replay log
 
