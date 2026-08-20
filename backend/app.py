@@ -1,7 +1,11 @@
 import asyncio
+import json
+import os
 import queue
 import threading
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -80,10 +84,51 @@ def mavlink_reader() -> None:
         latest = state
 
 
+RECORDINGS_DIR = Path(__file__).parent / "recordings"
+RECORD_INTERVAL_S = 0.2
+
+
+async def recorder() -> None:
+    """Append every distinct frame to a JSONL log for replay mode.
+
+    Samples the same `latest` snapshot at the same 5 Hz the WebSocket uses, so
+    a recording is exactly what the browser saw — that is what makes replay a
+    reproduction rather than an approximation. One JSON object per line: a
+    backend killed mid-flight still leaves a complete, readable file.
+    """
+    RECORDINGS_DIR.mkdir(exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    # PID in the name: two backends started in the same second must not open
+    # the same log, or one truncates the other's recording.
+    path = RECORDINGS_DIR / f"{stamp}-{os.getpid()}.jsonl"
+    print(f"[recorder] writing {path}")
+
+    previous: dict | None = None
+    frames = 0
+    with path.open("w", encoding="utf-8") as f:
+        while True:
+            frame = latest
+            if frame is not None and frame is not previous:
+                f.write(json.dumps(frame) + "\n")
+                f.flush()
+                previous = frame
+                frames += 1
+                # Say something on the first frame: silence here means no
+                # telemetry is reaching this process (usually another backend
+                # already holds UDP 14550).
+                if frames == 1:
+                    print("[recorder] telemetry flowing")
+                elif frames % 250 == 0:
+                    print(f"[recorder] {frames} frames")
+            await asyncio.sleep(RECORD_INTERVAL_S)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     threading.Thread(target=mavlink_reader, daemon=True).start()
+    task = asyncio.create_task(recorder())
     yield
+    task.cancel()
 
 
 app = FastAPI(lifespan=lifespan)

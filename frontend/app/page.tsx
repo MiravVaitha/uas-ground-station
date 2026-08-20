@@ -5,26 +5,13 @@ import { useEffect, useState } from "react";
 import type { MapPoint, PlannedWaypoint } from "./components/FlightMap";
 import TelemetryChart, { ChartPoint } from "./components/TelemetryChart";
 import { solveRelease, type ReleaseInputs } from "./lib/release";
+import { loadReplay, replayDuration } from "./lib/replay";
+import type { TelemetryFrame } from "./lib/telemetry";
 
 // MapLibre touches window/WebGL, so the map must never render on the server.
 const FlightMap = dynamic(() => import("./components/FlightMap"), {
   ssr: false,
 });
-
-type TelemetryFrame = {
-  schema: number;
-  time_s: number;
-  alt_m: number;
-  lat_deg?: number;
-  lon_deg?: number;
-  hdg_deg?: number;
-  battery_v?: number;
-  battery_pct?: number;
-  wp_seq?: number;
-  wp_dist_m?: number;
-  airspeed_mps?: number;
-  groundspeed_mps?: number;
-};
 
 const CHART_WINDOW_S = 120;
 const DEFAULT_WP_ALT_M = 100;
@@ -32,6 +19,45 @@ const DEFAULT_WP_ALT_M = 100;
 // Local flat-earth approximation: fine over the few hundred metres a release
 // solution spans. Longitude degrees shrink towards the poles, hence the cos.
 const M_PER_DEG_LAT = 111320;
+
+type Mode = "live" | "replay";
+
+/**
+ * Everything the dashboard derives from the telemetry stream.
+ *
+ * Both modes build this with `appendFrame` below — live by folding in each
+ * WebSocket message, replay by folding the recorded frames up to the playhead.
+ * One function, so the two modes cannot drift apart, and seeking backwards is
+ * just a fold over a shorter slice rather than a second code path.
+ */
+type ViewState = {
+  frame: TelemetryFrame | null;
+  history: ChartPoint[];
+  track: [number, number][];
+};
+
+const EMPTY_VIEW: ViewState = { frame: null, history: [], track: [] };
+
+function appendFrame(view: ViewState, f: TelemetryFrame): ViewState {
+  const lastPoint = view.history[view.history.length - 1];
+  const history =
+    lastPoint && lastPoint.time_s === f.time_s
+      ? view.history // no new position frame since the last sample
+      : [
+          ...view.history.filter((p) => p.time_s >= f.time_s - CHART_WINDOW_S),
+          { time_s: f.time_s, alt_m: f.alt_m, battery_v: f.battery_v },
+        ];
+
+  let track = view.track;
+  if (f.lat_deg !== undefined && f.lon_deg !== undefined) {
+    const lastFix = track[track.length - 1];
+    if (!lastFix || lastFix[0] !== f.lon_deg || lastFix[1] !== f.lat_deg) {
+      track = [...track, [f.lon_deg, f.lat_deg]];
+    }
+  }
+
+  return { frame: f, history, track };
+}
 
 function offsetToLatLon(
   origin: MapPoint,
@@ -48,6 +74,11 @@ function offsetToLatLon(
 // Adding zero turns JavaScript's -0 back into 0 so readouts never show "-0.0".
 function fmt(value: number, digits = 1): string {
   return (value + 0).toFixed(digits);
+}
+
+function clock(s: number): string {
+  const m = Math.floor(s / 60);
+  return `${m}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
 }
 
 function StatTile({ label, value }: { label: string; value: string }) {
@@ -86,10 +117,15 @@ function NumField({
 }
 
 export default function Home() {
-  const [frame, setFrame] = useState<TelemetryFrame | null>(null);
+  const [mode, setMode] = useState<Mode>("live");
+  const [view, setView] = useState<ViewState>(EMPTY_VIEW);
   const [connected, setConnected] = useState(false);
-  const [history, setHistory] = useState<ChartPoint[]>([]);
-  const [track, setTrack] = useState<[number, number][]>([]);
+
+  const [frames, setFrames] = useState<TelemetryFrame[]>([]);
+  const [replayError, setReplayError] = useState<string | null>(null);
+  const [index, setIndex] = useState(0);
+  const [playing, setPlaying] = useState(false);
+
   const [waypoints, setWaypoints] = useState<PlannedWaypoint[]>([]);
   const [uploading, setUploading] = useState(false);
   const [uploadMsg, setUploadMsg] = useState<{
@@ -106,50 +142,87 @@ export default function Home() {
     wind_from_deg: 270,
   });
 
+  const frame = view.frame;
+
+  // Live telemetry. Not opened at all in replay mode — the constraint is that
+  // replay needs no backend, so it must not even try to reach one.
   useEffect(() => {
+    if (mode !== "live") return;
+
     let ws: WebSocket | null = null;
     let retry: ReturnType<typeof setTimeout> | undefined;
-    let unmounted = false;
+    let stopped = false;
 
     function connect() {
       ws = new WebSocket("ws://127.0.0.1:8000/ws");
       ws.onopen = () => setConnected(true);
       ws.onmessage = (event) => {
         const f: TelemetryFrame = JSON.parse(event.data);
-        setFrame(f);
-        setHistory((prev) => {
-          if (prev.length > 0 && prev[prev.length - 1].time_s === f.time_s) {
-            return prev; // no new position frame since last snapshot
-          }
-          const cutoff = f.time_s - CHART_WINDOW_S;
-          return [
-            ...prev.filter((p) => p.time_s >= cutoff),
-            { time_s: f.time_s, alt_m: f.alt_m, battery_v: f.battery_v },
-          ];
-        });
-        if (f.lat_deg !== undefined && f.lon_deg !== undefined) {
-          setTrack((prev) => {
-            const last = prev[prev.length - 1];
-            if (last && last[0] === f.lon_deg && last[1] === f.lat_deg) {
-              return prev;
-            }
-            return [...prev, [f.lon_deg!, f.lat_deg!]];
-          });
-        }
+        setView((v) => appendFrame(v, f));
       };
       ws.onclose = () => {
         setConnected(false);
-        if (!unmounted) retry = setTimeout(connect, 2000);
+        if (!stopped) retry = setTimeout(connect, 2000);
       };
     }
     connect();
 
     return () => {
-      unmounted = true;
+      stopped = true;
       clearTimeout(retry);
       ws?.close();
     };
-  }, []);
+  }, [mode]);
+
+  // Fetch the recorded log the first time replay is selected.
+  useEffect(() => {
+    if (mode !== "replay" || frames.length > 0) return;
+    let cancelled = false;
+    loadReplay()
+      .then((f) => {
+        if (cancelled) return;
+        setFrames(f);
+        setReplayError(null);
+      })
+      .catch((e: Error) => {
+        if (!cancelled) setReplayError(e.message);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [mode, frames.length]);
+
+  // Rebuild the view from the start of the log up to the playhead. Cheap at
+  // these sizes, and it makes seeking backwards work for free.
+  useEffect(() => {
+    if (mode !== "replay" || frames.length === 0) return;
+    setView(frames.slice(0, index + 1).reduce(appendFrame, EMPTY_VIEW));
+  }, [mode, frames, index]);
+
+  // Advance the playhead using the recorded gap between frames, so playback
+  // runs at the speed the flight actually happened.
+  useEffect(() => {
+    if (mode !== "replay" || !playing || frames.length === 0) return;
+    if (index >= frames.length - 1) {
+      setPlaying(false);
+      return;
+    }
+    const gap_ms = (frames[index + 1].time_s - frames[index].time_s) * 1000;
+    const id = setTimeout(
+      () => setIndex((i) => i + 1),
+      Math.min(Math.max(gap_ms, 0), 1000) // clamp over any recording gap
+    );
+    return () => clearTimeout(id);
+  }, [mode, playing, frames, index]);
+
+  function switchMode(next: Mode) {
+    if (next === mode) return;
+    setMode(next);
+    setView(EMPTY_VIEW);
+    setIndex(0);
+    setPlaying(next === "replay");
+    setUploadMsg(null);
+  }
 
   // One map click means either "drop a target" or "add a waypoint", depending
   // on whether the target button is armed.
@@ -166,7 +239,7 @@ export default function Home() {
     setUploadMsg(null);
   }
 
-  function useLiveConditions() {
+  function useCurrentConditions() {
     if (!frame) return;
     // Round on the way in: raw telemetry floats overflow the input boxes, and
     // sub-decimetre precision is meaningless against this model's accuracy.
@@ -205,7 +278,10 @@ export default function Home() {
           typeof body?.detail === "string" ? body.detail : `HTTP ${res.status}`
         );
       }
-      setUploadMsg({ tone: "ok", text: `Uploaded ${waypoints.length} waypoints` });
+      setUploadMsg({
+        tone: "ok",
+        text: `Uploaded ${waypoints.length} waypoints`,
+      });
     } catch (err) {
       setUploadMsg({
         tone: "err",
@@ -234,41 +310,126 @@ export default function Home() {
     ? Math.hypot(solution.offset_north_m, solution.offset_east_m)
     : 0;
 
+  const total_s = replayDuration(frames);
+  const elapsed_s =
+    frames.length > 0 ? frames[index].time_s - frames[0].time_s : 0;
+
   return (
     <div className="flex h-screen flex-col bg-[#0d0d0d] font-sans text-white">
       <header className="flex items-center justify-between border-b border-white/10 px-4 py-2.5">
         <h1 className="text-sm font-semibold uppercase tracking-widest">
           UAS Ground Station
         </h1>
-        <div className="flex items-center gap-2 text-xs font-medium">
-          <span
-            className="inline-block h-2 w-2 rounded-full"
-            style={{ backgroundColor: connected ? "#0ca30c" : "#d03b3b" }}
-          />
-          <span className={connected ? "text-[#0ca30c]" : "text-[#d03b3b]"}>
-            {connected ? "LINK OK" : "LINK DOWN"}
-          </span>
+        <div className="flex items-center gap-3">
+          <div className="flex overflow-hidden rounded border border-white/10 text-[11px] font-medium">
+            {(["live", "replay"] as Mode[]).map((m) => (
+              <button
+                key={m}
+                onClick={() => switchMode(m)}
+                className={`px-2.5 py-1 uppercase tracking-wider ${
+                  mode === m
+                    ? "bg-white/10 text-white"
+                    : "text-[#898781] hover:text-white"
+                }`}
+              >
+                {m}
+              </button>
+            ))}
+          </div>
+          <div className="flex items-center gap-2 text-xs font-medium">
+            <span
+              className="inline-block h-2 w-2 rounded-full"
+              style={{
+                backgroundColor:
+                  mode === "replay"
+                    ? "#d95926"
+                    : connected
+                      ? "#0ca30c"
+                      : "#d03b3b",
+              }}
+            />
+            <span
+              style={{
+                color:
+                  mode === "replay"
+                    ? "#d95926"
+                    : connected
+                      ? "#0ca30c"
+                      : "#d03b3b",
+              }}
+            >
+              {mode === "replay"
+                ? "REPLAY"
+                : connected
+                  ? "LINK OK"
+                  : "LINK DOWN"}
+            </span>
+          </div>
         </div>
       </header>
 
       <main className="flex min-h-0 flex-1">
-        <section className="min-w-0 flex-1">
-          <FlightMap
-            track={track}
-            position={position}
-            waypoints={waypoints}
-            activeSeq={activeSeq}
-            target={target}
-            releasePoint={releasePoint}
-            onMapClick={handleMapClick}
-          />
+        <section className="flex min-w-0 flex-1 flex-col">
+          <div className="min-h-0 flex-1">
+            <FlightMap
+              track={view.track}
+              position={position}
+              waypoints={waypoints}
+              activeSeq={activeSeq}
+              target={target}
+              releasePoint={releasePoint}
+              onMapClick={handleMapClick}
+            />
+          </div>
+
+          {mode === "replay" && (
+            // pl-24 keeps the transport clear of the map's compass control,
+            // which sits in the bottom-left corner just above this bar.
+            <div className="flex items-center gap-3 border-t border-white/10 py-2 pl-24 pr-3">
+              {replayError ? (
+                <span className="text-xs text-[#d03b3b]">{replayError}</span>
+              ) : (
+                <>
+                  <button
+                    onClick={() => setPlaying((p) => !p)}
+                    disabled={frames.length === 0}
+                    className="w-16 rounded bg-[#d95926] py-1 text-[11px] font-semibold uppercase tracking-wider text-white hover:bg-[#e06a3a] disabled:bg-white/10 disabled:text-[#898781]"
+                  >
+                    {playing ? "Pause" : "Play"}
+                  </button>
+                  <button
+                    onClick={() => {
+                      setIndex(0);
+                      setPlaying(true);
+                    }}
+                    disabled={frames.length === 0}
+                    className="rounded border border-white/10 px-2 py-1 text-[11px] font-medium text-[#c3c2b7] hover:border-white/25 hover:text-white disabled:text-[#898781]"
+                  >
+                    Restart
+                  </button>
+                  <input
+                    type="range"
+                    min={0}
+                    max={Math.max(frames.length - 1, 0)}
+                    value={index}
+                    onChange={(e) => setIndex(Number(e.target.value))}
+                    disabled={frames.length === 0}
+                    className="h-1 flex-1 cursor-pointer accent-[#d95926]"
+                  />
+                  <span className="text-[11px] tabular-nums text-[#898781]">
+                    {clock(elapsed_s)} / {clock(total_s)}
+                  </span>
+                </>
+              )}
+            </div>
+          )}
         </section>
 
         <aside className="flex w-[360px] shrink-0 flex-col gap-3 overflow-y-auto border-l border-white/10 p-3">
           <div className="grid grid-cols-2 gap-3">
             <StatTile
               label="Altitude"
-              value={frame ? `${frame.alt_m.toFixed(1)} m` : "—"}
+              value={frame ? `${fmt(frame.alt_m)} m` : "—"}
             />
             <StatTile
               label="Heading"
@@ -282,7 +443,7 @@ export default function Home() {
               label="Battery"
               value={
                 frame?.battery_v !== undefined
-                  ? `${frame.battery_v.toFixed(2)} V`
+                  ? `${fmt(frame.battery_v, 2)} V`
                   : "—"
               }
             />
@@ -377,10 +538,19 @@ export default function Home() {
 
             <button
               onClick={uploadMission}
-              disabled={!connected || uploading || waypoints.length === 0}
+              disabled={
+                mode !== "live" ||
+                !connected ||
+                uploading ||
+                waypoints.length === 0
+              }
               className="mt-2 w-full rounded bg-[#3987e5] py-1.5 text-xs font-semibold text-white transition-colors hover:bg-[#4a94ea] disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-[#898781]"
             >
-              {uploading ? "Uploading…" : "Upload mission"}
+              {uploading
+                ? "Uploading…"
+                : mode === "replay"
+                  ? "Upload needs a vehicle"
+                  : "Upload mission"}
             </button>
 
             {uploadMsg && (
@@ -462,11 +632,11 @@ export default function Home() {
             </div>
 
             <button
-              onClick={useLiveConditions}
+              onClick={useCurrentConditions}
               disabled={!frame}
               className="mt-2 w-full rounded border border-white/10 py-1 text-[11px] font-medium text-[#c3c2b7] hover:border-white/25 hover:text-white disabled:cursor-not-allowed disabled:text-[#898781] disabled:hover:border-white/10"
             >
-              Use live conditions
+              Use current conditions
             </button>
 
             {solution && (
@@ -494,7 +664,7 @@ export default function Home() {
           <TelemetryChart
             title="Altitude"
             unit="m"
-            data={history}
+            data={view.history}
             dataKey="alt_m"
             color="#3987e5"
             domain={[0, "auto"]}
@@ -502,7 +672,7 @@ export default function Home() {
           <TelemetryChart
             title="Battery"
             unit="V"
-            data={history}
+            data={view.history}
             dataKey="battery_v"
             color="#d95926"
           />
