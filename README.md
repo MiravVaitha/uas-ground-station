@@ -2,19 +2,19 @@
 
 Ground control station for a fixed-wing UAS. Live MAVLink telemetry from ArduPilot SITL, a vector map with the flight track, waypoint upload and mission monitoring, a payload release solver, and offline replay of recorded flights.
 
-**[Live demo →](https://uas-ground-station.vercel.app)** — plays a recorded flight in the browser. No install, no vehicle, no backend.
+**[Live demo →](https://uas-ground-station.vercel.app)**: plays a recorded flight in the browser. No install, no vehicle, no backend.
 
 ![Live flight track and telemetry](docs/media/03-map-track-telemetry.gif)
 
 ## Two modes
 
-**Live** — the backend listens for MAVLink over UDP, translates it into a normalized telemetry format, and streams it to the browser over a WebSocket.
+**Live**: the backend listens for MAVLink over UDP, translates it into a normalized telemetry format, and streams it to the browser over a WebSocket.
 
-**Replay** — the frontend plays a recorded flight from a static JSON file. **No backend, no vehicle, no network beyond the page itself.** This constraint drove the architecture: the frontend never sees raw MAVLink, only the normalized format, so both modes produce identically shaped data and share one code path into the UI.
+**Replay**: the frontend plays a recorded flight from a static JSON file. **No backend, no vehicle, no network beyond the page itself.** This constraint drove the architecture: the frontend never sees raw MAVLink, only the normalized format, so both modes produce identically shaped data and share one code path into the UI.
 
 ![Replay mode with the backend stopped](docs/media/06-replay-mode.gif)
 
-Everything except mission upload keeps working with the backend off — the map, charts, waypoint planning, and the release solver are all either replayed or computed in the browser. Upload is the one action that genuinely needs a vehicle, and it says so.
+Everything except mission upload keeps working with the backend off: the map, charts, waypoint planning, and the release solver are all either replayed or computed in the browser. Upload is the one action that genuinely needs a vehicle, and it says so.
 
 A deployed copy of this app therefore runs the replay flight, the map, planning and the solver, but not live telemetry: the backend listens on `127.0.0.1`, so live mode only means anything when the page is served from the same machine. The app picks its starting mode from the hostname for that reason.
 
@@ -45,7 +45,7 @@ flowchart LR
     LOG -.->|"replay mode"| UI
 ```
 
-Blocking pymavlink calls cannot run on the event loop, so a daemon thread owns the MAVLink connection and swaps each normalized frame into a shared reference (a whole-reference swap is atomic under the GIL). The WebSocket handler and the recorder are independent consumers of that snapshot, both sampling at 5 Hz — which is why a recording is exactly what the browser saw.
+Blocking pymavlink calls cannot run on the event loop, so a daemon thread owns the MAVLink connection and swaps each normalized frame into a shared reference (a whole-reference swap is atomic under the GIL). The WebSocket handler and the recorder are independent consumers of that snapshot, both sampling at 5 Hz, which is why a recording is exactly what the browser saw.
 
 Mission upload is an autopilot-driven handshake arriving on the same UDP link as telemetry, so it has to run on the thread that owns the connection: the HTTP handler puts a job on a queue and waits, and the reader loop services it between messages.
 
@@ -61,18 +61,18 @@ Mission upload is an autopilot-driven handshake arriving on the same UDP link as
 
 ## Normalized telemetry format
 
-Flat JSON, SI units, unit suffix in every field name. Conversions happen once, at the MAVLink boundary in `backend/telemetry.py`. The format only ever grows by adding optional fields — never by renaming or re-scaling one — so recorded logs stay playable.
+Flat JSON, SI units, unit suffix in every field name. Conversions happen once, at the MAVLink boundary in `backend/telemetry.py`. The format only ever grows by adding optional fields, never by renaming or re-scaling one, so recorded logs stay playable.
 
 | Field | Unit | MAVLink source |
 | --- | --- | --- |
-| `schema` | — | format version (currently 1) |
+| `schema` | n/a | format version (currently 1) |
 | `time_s` | s | `GLOBAL_POSITION_INT.time_boot_ms` |
 | `alt_m` | m above home | `GLOBAL_POSITION_INT.relative_alt` |
 | `lat_deg`, `lon_deg` | ° | `GLOBAL_POSITION_INT.lat`, `.lon` |
 | `hdg_deg` | ° | `GLOBAL_POSITION_INT.hdg` |
 | `battery_v` | V | `SYS_STATUS.voltage_battery` |
 | `battery_pct` | % | `SYS_STATUS.battery_remaining` |
-| `wp_seq` | — | `MISSION_CURRENT.seq` |
+| `wp_seq` | n/a | `MISSION_CURRENT.seq` |
 | `wp_dist_m` | m | `NAV_CONTROLLER_OUTPUT.wp_dist` |
 | `airspeed_mps`, `groundspeed_mps` | m/s | `VFR_HUD.airspeed`, `.groundspeed` |
 
@@ -123,7 +123,7 @@ The backend is not deployable to a serverless host: it needs a long-lived proces
 
 ## Recording a replay log
 
-The backend records automatically, writing every frame to `backend/recordings/<timestamp>-<pid>.jsonl` — line-delimited, so a backend killed mid-flight still leaves a valid file. To turn a recording into the replay asset:
+The backend records automatically, writing every frame to `backend/recordings/<timestamp>-<pid>.jsonl`: line-delimited, so a backend killed mid-flight still leaves a valid file. To turn a recording into the replay asset:
 
 ```bash
 python make_replay.py recordings/20260820-105758.jsonl --start 425 --duration 120
@@ -166,4 +166,4 @@ NOTES.md           problems hit and how they were solved
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).
