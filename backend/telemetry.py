@@ -22,6 +22,11 @@ def normalize(msg) -> dict:
         return {
             "wp_dist_m": msg.wp_dist,
         }
+    elif kind == "VFR_HUD":
+        return {
+            "airspeed_mps": msg.airspeed,
+            "groundspeed_mps": msg.groundspeed,
+        }
     return {}
         
     

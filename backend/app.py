@@ -67,6 +67,7 @@ def mavlink_reader() -> None:
                 "SYS_STATUS",
                 "MISSION_CURRENT",
                 "NAV_CONTROLLER_OUTPUT",
+                "VFR_HUD",
             ],
             blocking=True,
             timeout=1,

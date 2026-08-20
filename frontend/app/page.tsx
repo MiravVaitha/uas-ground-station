@@ -2,8 +2,9 @@
 
 import dynamic from "next/dynamic";
 import { useEffect, useState } from "react";
-import type { PlannedWaypoint } from "./components/FlightMap";
+import type { MapPoint, PlannedWaypoint } from "./components/FlightMap";
 import TelemetryChart, { ChartPoint } from "./components/TelemetryChart";
+import { solveRelease, type ReleaseInputs } from "./lib/release";
 
 // MapLibre touches window/WebGL, so the map must never render on the server.
 const FlightMap = dynamic(() => import("./components/FlightMap"), {
@@ -21,10 +22,33 @@ type TelemetryFrame = {
   battery_pct?: number;
   wp_seq?: number;
   wp_dist_m?: number;
+  airspeed_mps?: number;
+  groundspeed_mps?: number;
 };
 
 const CHART_WINDOW_S = 120;
 const DEFAULT_WP_ALT_M = 100;
+
+// Local flat-earth approximation: fine over the few hundred metres a release
+// solution spans. Longitude degrees shrink towards the poles, hence the cos.
+const M_PER_DEG_LAT = 111320;
+
+function offsetToLatLon(
+  origin: MapPoint,
+  north_m: number,
+  east_m: number
+): MapPoint {
+  const mPerDegLon = M_PER_DEG_LAT * Math.cos(origin.lat_deg * (Math.PI / 180));
+  return {
+    lat_deg: origin.lat_deg + north_m / M_PER_DEG_LAT,
+    lon_deg: origin.lon_deg + east_m / mPerDegLon,
+  };
+}
+
+// Adding zero turns JavaScript's -0 back into 0 so readouts never show "-0.0".
+function fmt(value: number, digits = 1): string {
+  return (value + 0).toFixed(digits);
+}
 
 function StatTile({ label, value }: { label: string; value: string }) {
   return (
@@ -39,6 +63,28 @@ function StatTile({ label, value }: { label: string; value: string }) {
   );
 }
 
+function NumField({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  onChange: (v: number) => void;
+}) {
+  return (
+    <label className="flex items-center justify-between gap-2 text-xs text-[#898781]">
+      <span>{label}</span>
+      <input
+        type="number"
+        value={value}
+        onChange={(e) => onChange(Number(e.target.value))}
+        className="w-16 rounded border border-white/10 bg-[#0d0d0d] px-1 py-0.5 text-right text-xs tabular-nums text-white"
+      />
+    </label>
+  );
+}
+
 export default function Home() {
   const [frame, setFrame] = useState<TelemetryFrame | null>(null);
   const [connected, setConnected] = useState(false);
@@ -50,6 +96,15 @@ export default function Home() {
     tone: "ok" | "err";
     text: string;
   } | null>(null);
+  const [target, setTarget] = useState<MapPoint | null>(null);
+  const [settingTarget, setSettingTarget] = useState(false);
+  const [release, setRelease] = useState<ReleaseInputs>({
+    groundspeed_mps: 20,
+    altitude_m: 100,
+    heading_deg: 0,
+    wind_speed_mps: 0,
+    wind_from_deg: 270,
+  });
 
   useEffect(() => {
     let ws: WebSocket | null = null;
@@ -96,12 +151,32 @@ export default function Home() {
     };
   }, []);
 
-  function addWaypoint(lat_deg: number, lon_deg: number) {
+  // One map click means either "drop a target" or "add a waypoint", depending
+  // on whether the target button is armed.
+  function handleMapClick(lat_deg: number, lon_deg: number) {
+    if (settingTarget) {
+      setTarget({ lat_deg, lon_deg });
+      setSettingTarget(false);
+      return;
+    }
     setWaypoints((prev) => [
       ...prev,
       { lat_deg, lon_deg, alt_m: DEFAULT_WP_ALT_M },
     ]);
     setUploadMsg(null);
+  }
+
+  function useLiveConditions() {
+    if (!frame) return;
+    // Round on the way in: raw telemetry floats overflow the input boxes, and
+    // sub-decimetre precision is meaningless against this model's accuracy.
+    setRelease((prev) => ({
+      ...prev,
+      groundspeed_mps:
+        Math.round((frame.groundspeed_mps ?? prev.groundspeed_mps) * 10) / 10,
+      altitude_m: Math.round(frame.alt_m * 10) / 10,
+      heading_deg: Math.round(frame.hdg_deg ?? prev.heading_deg),
+    }));
   }
 
   function setWaypointAlt(index: number, alt_m: number) {
@@ -150,6 +225,15 @@ export default function Home() {
   const activeSeq =
     frame?.wp_seq !== undefined && frame.wp_seq >= 1 ? frame.wp_seq : null;
 
+  const solution = release.altitude_m > 0 ? solveRelease(release) : null;
+  const releasePoint =
+    target && solution
+      ? offsetToLatLon(target, solution.offset_north_m, solution.offset_east_m)
+      : null;
+  const releaseDist_m = solution
+    ? Math.hypot(solution.offset_north_m, solution.offset_east_m)
+    : 0;
+
   return (
     <div className="flex h-screen flex-col bg-[#0d0d0d] font-sans text-white">
       <header className="flex items-center justify-between border-b border-white/10 px-4 py-2.5">
@@ -174,7 +258,9 @@ export default function Home() {
             position={position}
             waypoints={waypoints}
             activeSeq={activeSeq}
-            onMapClick={addWaypoint}
+            target={target}
+            releasePoint={releasePoint}
+            onMapClick={handleMapClick}
           />
         </section>
 
@@ -204,6 +290,22 @@ export default function Home() {
               label="Charge"
               value={
                 frame?.battery_pct !== undefined ? `${frame.battery_pct}%` : "—"
+              }
+            />
+            <StatTile
+              label="Airspeed"
+              value={
+                frame?.airspeed_mps !== undefined
+                  ? `${fmt(frame.airspeed_mps)} m/s`
+                  : "—"
+              }
+            />
+            <StatTile
+              label="Gnd speed"
+              value={
+                frame?.groundspeed_mps !== undefined
+                  ? `${fmt(frame.groundspeed_mps)} m/s`
+                  : "—"
               }
             />
           </div>
@@ -297,6 +399,95 @@ export default function Home() {
                 {frame?.wp_dist_m !== undefined &&
                   ` — ${frame.wp_dist_m.toFixed(0)} m`}
               </p>
+            )}
+          </div>
+
+          <div className="rounded-lg border border-white/10 bg-[#1a1a19] p-3">
+            <div className="mb-2 flex items-center justify-between">
+              <span className="text-xs font-medium uppercase tracking-wider text-[#c3c2b7]">
+                Payload release
+              </span>
+              <button
+                onClick={() => setSettingTarget((v) => !v)}
+                className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${
+                  settingTarget
+                    ? "bg-[#d95926] text-white"
+                    : "text-[#898781] hover:text-white"
+                }`}
+              >
+                {settingTarget ? "Click the map…" : "Set target"}
+              </button>
+            </div>
+
+            {target ? (
+              <p className="mb-2 text-[11px] tabular-nums text-[#898781]">
+                Target {target.lat_deg.toFixed(5)}, {target.lon_deg.toFixed(5)}
+              </p>
+            ) : (
+              <p className="mb-2 text-xs text-[#898781]">
+                Set a target to see the release point.
+              </p>
+            )}
+
+            <div className="flex flex-col gap-1.5">
+              <NumField
+                label="Gnd speed m/s"
+                value={release.groundspeed_mps}
+                onChange={(v) =>
+                  setRelease((p) => ({ ...p, groundspeed_mps: v }))
+                }
+              />
+              <NumField
+                label="Altitude m"
+                value={release.altitude_m}
+                onChange={(v) => setRelease((p) => ({ ...p, altitude_m: v }))}
+              />
+              <NumField
+                label="Heading °"
+                value={release.heading_deg}
+                onChange={(v) => setRelease((p) => ({ ...p, heading_deg: v }))}
+              />
+              <NumField
+                label="Wind m/s"
+                value={release.wind_speed_mps}
+                onChange={(v) =>
+                  setRelease((p) => ({ ...p, wind_speed_mps: v }))
+                }
+              />
+              <NumField
+                label="Wind from °"
+                value={release.wind_from_deg}
+                onChange={(v) => setRelease((p) => ({ ...p, wind_from_deg: v }))}
+              />
+            </div>
+
+            <button
+              onClick={useLiveConditions}
+              disabled={!frame}
+              className="mt-2 w-full rounded border border-white/10 py-1 text-[11px] font-medium text-[#c3c2b7] hover:border-white/25 hover:text-white disabled:cursor-not-allowed disabled:text-[#898781] disabled:hover:border-white/10"
+            >
+              Use live conditions
+            </button>
+
+            {solution && (
+              <dl className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 border-t border-white/10 pt-2 text-[11px] tabular-nums">
+                <dt className="text-[#898781]">Fall time</dt>
+                <dd className="text-right text-white">
+                  {fmt(solution.fall_time_s, 2)} s
+                </dd>
+                <dt className="text-[#898781]">Forward carry</dt>
+                <dd className="text-right text-white">
+                  {fmt(solution.forward_carry_m)} m
+                </dd>
+                <dt className="text-[#898781]">Wind drift</dt>
+                <dd className="text-right text-white">
+                  {fmt(solution.wind_drift_m)} m
+                </dd>
+                <dt className="text-[#d95926]">Release before</dt>
+                <dd className="text-right font-semibold text-[#d95926]">
+                  {fmt(releaseDist_m)} m
+                </dd>
+              </dl>
             )}
           </div>
 

@@ -25,11 +25,15 @@ export type PlannedWaypoint = {
   alt_m: number;
 };
 
+export type MapPoint = { lat_deg: number; lon_deg: number };
+
 type Props = {
   track: [number, number][]; // [lon, lat] pairs, oldest first
   position: { lon: number; lat: number; hdg: number } | null;
   waypoints: PlannedWaypoint[];
   activeSeq: number | null; // mission seq in flight; waypoint k is seq k+1
+  target: MapPoint | null;
+  releasePoint: MapPoint | null;
   onMapClick: (lat_deg: number, lon_deg: number) => void;
 };
 
@@ -38,6 +42,8 @@ export default function FlightMap({
   position,
   waypoints,
   activeSeq,
+  target,
+  releasePoint,
   onMapClick,
 }: Props) {
   const trackFeature = {
@@ -58,6 +64,21 @@ export default function FlightMap({
   function handleClick(e: MapLayerMouseEvent) {
     onMapClick(e.lngLat.lat, e.lngLat.lng);
   }
+
+  const releaseLineFeature =
+    target && releasePoint
+      ? {
+          type: "Feature" as const,
+          geometry: {
+            type: "LineString" as const,
+            coordinates: [
+              [releasePoint.lon_deg, releasePoint.lat_deg],
+              [target.lon_deg, target.lat_deg],
+            ],
+          },
+          properties: {},
+        }
+      : null;
 
   return (
     <Map
@@ -110,6 +131,68 @@ export default function FlightMap({
           </Marker>
         );
       })}
+      {releaseLineFeature && (
+        <Source id="release-line" type="geojson" data={releaseLineFeature}>
+          <Layer
+            id="release-line-layer"
+            type="line"
+            paint={{
+              "line-color": "#d95926",
+              "line-width": 2,
+              "line-dasharray": [1.5, 1.5],
+            }}
+          />
+        </Source>
+      )}
+      {target && (
+        <Marker
+          longitude={target.lon_deg}
+          latitude={target.lat_deg}
+          anchor="center"
+        >
+          {/* Target: crosshair */}
+          <svg width="26" height="26" viewBox="0 0 26 26">
+            <circle
+              cx="13"
+              cy="13"
+              r="8"
+              fill="none"
+              stroke="#ffffff"
+              strokeWidth="2"
+            />
+            <circle cx="13" cy="13" r="2" fill="#ffffff" />
+            <path
+              d="M13 1 V6 M13 20 V25 M1 13 H6 M20 13 H25"
+              stroke="#ffffff"
+              strokeWidth="2"
+            />
+          </svg>
+        </Marker>
+      )}
+      {releasePoint && (
+        <Marker
+          longitude={releasePoint.lon_deg}
+          latitude={releasePoint.lat_deg}
+          anchor="center"
+        >
+          {/* Release point: ring + drop cross in series-2 orange */}
+          <svg width="22" height="22" viewBox="0 0 22 22">
+            <circle
+              cx="11"
+              cy="11"
+              r="8"
+              fill="rgba(217,89,38,0.25)"
+              stroke="#d95926"
+              strokeWidth="2.5"
+            />
+            <path
+              d="M11 6 V16 M6 11 H16"
+              stroke="#d95926"
+              strokeWidth="2"
+            />
+          </svg>
+        </Marker>
+      )}
       {position && (
         <Marker
           longitude={position.lon}
