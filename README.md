@@ -2,6 +2,8 @@
 
 Ground control station for a fixed-wing UAS. Live MAVLink telemetry from ArduPilot SITL, a vector map with the flight track, waypoint upload and mission monitoring, a payload release solver, and offline replay of recorded flights.
 
+**[Live demo →](https://uas-ground-station.vercel.app)** — plays a recorded flight in the browser. No install, no vehicle, no backend.
+
 ![Live flight track and telemetry](docs/media/03-map-track-telemetry.gif)
 
 ## Two modes
